@@ -1,0 +1,8 @@
+---
+tags:
+- {{ category }}
+- inbox
+created_at: {{ os.date("%Y-%m-%d") }}
+---
+
+{{ content }}

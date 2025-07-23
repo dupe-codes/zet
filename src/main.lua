@@ -1,8 +1,56 @@
--- main.lua  •  LÖVE 11.5+
--- Notes UI with dropdown, Shift+Enter save, scrollable note box & scrollbar.
--- NEW: click‑to‑place caret inside the note field, and editing occurs at caret.
+-- expose ./lua_modules/**
+do
+    local root = love.filesystem.getSourceBaseDirectory()
+
+    local ver = "5.1"
+    package.path = root
+        .. "/lua_modules/share/lua/"
+        .. ver
+        .. "/?.lua;"
+        .. root
+        .. "/lua_modules/share/lua/"
+        .. ver
+        .. "/?/init.lua;"
+        .. package.path
+
+    local ext = (jit.os == "Windows" and "dll")
+        or (jit.os == "OSX" and "dylib")
+        or "so"
+
+    package.cpath = root
+        .. "/lua_modules/lib/lua/"
+        .. ver
+        .. "/?."
+        .. ext
+        .. ";"
+        .. package.cpath
+end
+
+local NOTES_DIR = os.getenv "HOME" .. "/datastore"
 
 local utf8 = require "utf8"
+local yaml = require "yaml"
+
+local file_utils = require "file-utils"
+local template_engine = require "templates.engine"
+
+local BINS_PATH = NOTES_DIR .. "/configs/bins.yml"
+local BINS = yaml.eval(file_utils.read_file(BINS_PATH))
+
+local BIN_LOOKUP = {}
+for _, row in ipairs(BINS.bins or {}) do
+    BIN_LOOKUP[row.tag] = row.bin
+end
+
+local CATEGORY_OPTIONS = {}
+
+for _, row in ipairs(BINS.bins or {}) do
+    local tag = row.tag
+    if tag then
+        table.insert(CATEGORY_OPTIONS, tag)
+    end
+end
+table.sort(CATEGORY_OPTIONS)
 
 --------------------------------------------------------------
 --  CONFIGURATION  -------------------------------------------
@@ -17,33 +65,45 @@ local SCROLL_SPEED = 40 -- pixels per wheel notch
 local CONTENT_PAD = 24 -- pixels of extra space below the last line
 local ARROW_W = 44 -- width reserved at the right for the arrow button
 
--- Colours
-local PAPER_COLOR = { 0.976, 0.973, 0.949 }
-local SHEET_COLOR = { 1, 1, 1 }
-local BORDER_COLOR = { 0.82, 0.82, 0.82 }
-local FOCUS_COLOR = { 0.25, 0.55, 0.95 }
-local BTN_COLOR = { 0.23, 0.49, 0.95 }
-local BTN_COL_HOVER = { 0.28, 0.55, 1.00 }
-local DROPDOWN_BG = { 0.97, 0.97, 0.97 }
-local HINT_COLOR = { 0.45, 0.45, 0.45 }
-local SCROLL_COL = { 0.75, 0.75, 0.75 }
+--------------------------------------------------------------
+--  COLOR SCHEME   -------------------------------------------
+--------------------------------------------------------------
+local PAPER_COLOR = { 0.902, 0.906, 0.929 } -- #e6e7ed  (editor.bg)
+local SHEET_COLOR = { 1.000, 1.000, 1.000 } -- white   (note sheet)
 
--- Category list — extend here 👇
-local CATEGORY_OPTIONS = { "art", "hacking", "gamedev" }
+local BORDER_COLOR = { 0.757, 0.761, 0.780 } -- #c1c2c7 (input.border)
+local FOCUS_COLOR = { 0.161, 0.349, 0.667 } -- #2959aa (focusBorder / button)
+
+-- Buttons ----------------------------------------------------
+local BTN_COLOR = { 0.161, 0.349, 0.667 } -- #2959aa (button.background)
+local BTN_COL_HOVER = { 0.239, 0.447, 0.792 } -- lighter blue for hover
+
+local CLOSE_BTN_COL = { 0.549, 0.263, 0.318 } -- #8c4351 (ansiRed)
+local CLOSE_BTN_HOVER = { 0.616, 0.333, 0.376 } -- slightly lighter red
+
+-- Dropdown / misc -------------------------------------------
+local DROPDOWN_BG = { 0.902, 0.906, 0.929 } -- #e6e7ed (dropdown.bg)
+local HINT_COLOR = { 0.439, 0.447, 0.502 } -- #707280 (descriptionFg)
+local SCROLL_COL = { 0.565, 0.573, 0.588 } -- #909296 (scrollbar slider)
+
+-- arrow-strip greys (for dropdown button)
+local ARROW_BG = { 0.922, 0.925, 0.937 } -- #ebecf0 (inactive)
+local ARROW_BG_HOVER = { 0.847, 0.855, 0.878 } -- #d8dae0 (hover)
+
+local titleFont, subtitleFont -- declare up top
+local HEADER_H = 90 -- vertical space we’ll reserve
 
 --------------------------------------------------------------
 --  GLOBAL STATE  --------------------------------------------
 --------------------------------------------------------------
-local sheet, titleBox, dropdown, noteBox, saveBtn
+local sheet, titleBox, dropdown, noteBox, saveBtn, closeBtn
 local font, hintFont
 local titleText, noteText = "", ""
-local hoverBtn = false
+local hoverSave = false
+local hoverClose = false
 local noteScroll = 0 -- current vertical scroll offset
 local caretPos = 1 -- UTF‑8 char index where next insert happens (1‑based)
 
---------------------------------------------------------------
---  HELPER FUNCTIONS  ----------------------------------------
---------------------------------------------------------------
 local function contains(r, x, y)
     return x > r.x and x < r.x + r.w and y > r.y and y < r.y + r.h
 end
@@ -87,19 +147,61 @@ local function getCaretXY(text, pos, wrapW, f)
     return x, y
 end
 
+local function slugify(str)
+    -- lower-case, swap spaces for underscores, strip non-alphanumerics
+    return (str:lower():gsub("[^%w%s]", ""):gsub("%s+", "_"))
+end
+
 local function saveNote()
-    local msg = ("Category: %s\nTitle: %s\n\nNote:\n%s"):format(
-        dropdown.selected,
-        titleText,
-        noteText
+    local category = dropdown.selected
+    local binRelPath = BIN_LOOKUP[category] -- e.g. "1 - art/notes"
+    assert(binRelPath, "No bin configured for tag: " .. tostring(category))
+    local destDir = NOTES_DIR .. "/" .. binRelPath
+
+    local title = titleText:gsub("^%s+", ""):gsub("%s+$", "")
+    local baseName = title ~= "" and slugify(title) or os.date "%Y-%m-%d_%H%M%S"
+    local fullPath = destDir .. "/" .. baseName .. ".md"
+
+    local templatePath = love.filesystem.getSourceBaseDirectory()
+        .. "/src/templates/note.mdlua"
+
+    local rendered_note = template_engine.compile_template_file(templatePath, {
+        category = category,
+        content = noteText,
+        os = os, -- so {% os.date %} works in template
+    })
+
+    local ok, err = file_utils.write_file(fullPath, rendered_note)
+    if not ok then
+        local msg
+        if err == "exists" then
+            msg = (
+                'A note named "%s" already exists in:\n%s\n\n'
+                .. "Please choose a different title."
+            ):format(baseName, destDir)
+        else
+            msg = ("Failed to save note:\n%s"):format(err)
+        end
+
+        love.window.showMessageBox("zet – error", msg, "error", true)
+        return
+    end
+
+    love.window.showMessageBox(
+        "zet – saved",
+        ("Wrote %s"):format(fullPath),
+        "info",
+        true
     )
-    love.window.showMessageBox("zet", msg, "info", true)
 end
 
 --------------------------------------------------------------
 --  LOVE CALLBACKS  ------------------------------------------
 --------------------------------------------------------------
 function love.load()
+    titleFont = love.graphics.newFont(32)
+    subtitleFont = love.graphics.newFont(18)
+
     love.window.setMode(WIN_W, WIN_H, { centered = true, resizable = false })
     love.window.setTitle "zet"
     love.graphics.setBackgroundColor(PAPER_COLOR)
@@ -118,7 +220,7 @@ function love.load()
     }
     titleBox = {
         x = sheet.x + 40,
-        y = sheet.y + 40,
+        y = sheet.y + HEADER_H,
         w = sheet.w - 80,
         h = TITLE_H,
         active = false,
@@ -131,16 +233,28 @@ function love.load()
         expanded = false,
         selected = CATEGORY_OPTIONS[1],
     }
+
+    local btnTop = sheet.y + sheet.h - BTN_H - 40
+    local noteTop = dropdown.y + DROPDOWN_H + 20
+    local noteHeight = btnTop - noteTop - 20
+
     noteBox = {
         x = dropdown.x,
-        y = dropdown.y + DROPDOWN_H + 20,
+        y = noteTop,
         w = dropdown.w,
-        h = sheet.h - TITLE_H - DROPDOWN_H - BTN_H - 140,
+        h = noteHeight,
         active = false,
     }
+
     saveBtn = {
         x = sheet.x + sheet.w - BTN_W - 40,
         y = sheet.y + sheet.h - BTN_H - 40,
+        w = BTN_W,
+        h = BTN_H,
+    }
+    closeBtn = {
+        x = saveBtn.x - BTN_W - 20,
+        y = saveBtn.y,
         w = BTN_W,
         h = BTN_H,
     }
@@ -149,7 +263,8 @@ end
 
 function love.update(dt)
     local mx, my = love.mouse.getPosition()
-    hoverBtn = contains(saveBtn, mx, my)
+    hoverSave = contains(saveBtn, mx, my)
+    hoverClose = contains(closeBtn, mx, my)
 end
 
 function love.textinput(t)
@@ -239,7 +354,7 @@ local function setCaretFromClick(x, y)
     -- iterate char by char to find click pos within line
     local accW = 0
     local charInLine = 1
-    for i, c in utf8.codes(line) do
+    for _, c in utf8.codes(line) do
         local ch = utf8.char(c)
         local w = font:getWidth(ch)
         if accW + w / 2 >= relX then
@@ -279,6 +394,12 @@ function love.mousepressed(x, y, btn)
 
     if contains(saveBtn, x, y) then
         saveNote()
+        return
+    end
+
+    if contains(closeBtn, x, y) then
+        love.event.quit()
+        return
     end
 end
 
@@ -294,8 +415,7 @@ local function drawInput(box)
 end
 
 local function drawDropdown()
-    ------------------------------------------------------------------
-    -- Base field ----------------------------------------------------
+    -- Base field
     love.graphics.setColor(1, 1, 1)
     love.graphics.rectangle(
         "fill",
@@ -320,31 +440,23 @@ local function drawDropdown()
         8
     )
 
-    ------------------------------------------------------------------
     -- Text label (“art”, “hacking”…)
     love.graphics.setColor(0, 0, 0)
     love.graphics.printf(
         dropdown.selected,
         dropdown.x + 12,
         dropdown.y + 10,
-        dropdown.w - ARROW_W - 12, -- give arrow area its space
+        dropdown.w - ARROW_W - 12,
         "left"
     )
 
-    ------------------------------------------------------------------
-    -- Arrow button area --------------------------------------------
     local arrowX = dropdown.x + dropdown.w - ARROW_W
     local hover = contains(
         { x = arrowX, y = dropdown.y, w = ARROW_W, h = dropdown.h },
         love.mouse.getPosition()
     )
 
-    -- Subtle grey background that brightens on hover
-    if hover then
-        love.graphics.setColor(0.90, 0.90, 0.90)
-    else
-        love.graphics.setColor(0.95, 0.95, 0.95)
-    end
+    love.graphics.setColor(hover and ARROW_BG_HOVER or ARROW_BG)
     love.graphics.rectangle(
         "fill",
         arrowX,
@@ -365,7 +477,6 @@ local function drawDropdown()
         dropdown.y + dropdown.h - 4
     )
 
-    -- Arrow icon (triangle) – rotates when expanded
     local midX = arrowX + ARROW_W / 2
     local midY = dropdown.y + dropdown.h / 2
     love.graphics.setColor(0.2, 0.2, 0.2)
@@ -394,8 +505,6 @@ local function drawDropdown()
         )
     end
 
-    ------------------------------------------------------------------
-    -- Expanded option list (unchanged) ------------------------------
     if dropdown.expanded then
         love.graphics.setColor(DROPDOWN_BG)
         love.graphics.rectangle(
@@ -451,7 +560,6 @@ local function drawNoteBox()
         "left"
     )
 
-    -- caret  (drawn in the translated space → no extra scroll math)
     if noteBox.active then
         local cx, cy = getCaretXY(noteText, caretPos, noteBox.w - 24, font)
         local caretX = noteBox.x + 12 + cx -- 12-px left padding
@@ -462,6 +570,7 @@ local function drawNoteBox()
 
     love.graphics.pop()
     love.graphics.setScissor()
+
     -- scrollbar
     local contentH = getContentHeight(noteText, noteBox.w - 24, font)
     if contentH > noteBox.h then
@@ -480,6 +589,7 @@ local function drawNoteBox()
             2
         )
     end
+
     -- hint
     love.graphics.setFont(hintFont)
     love.graphics.setColor(HINT_COLOR)
@@ -508,6 +618,20 @@ function love.draw()
     love.graphics.setColor(SHEET_COLOR)
     love.graphics.rectangle("fill", sheet.x, sheet.y, sheet.w, sheet.h, 12, 12)
 
+    love.graphics.setFont(titleFont)
+    love.graphics.setColor(FOCUS_COLOR) -- same blue you use for focus
+    love.graphics.print("zet", sheet.x + 40, sheet.y + 10)
+
+    love.graphics.setFont(subtitleFont)
+    love.graphics.setColor(HINT_COLOR) -- subtle grey
+    love.graphics.print(
+        "the giga zettelkasten helper",
+        sheet.x + 40,
+        sheet.y + 10 + titleFont:getHeight()
+    )
+
+    love.graphics.setFont(font)
+
     drawInput(titleBox)
     love.graphics.setColor(0, 0, 0)
     love.graphics.printf(
@@ -521,7 +645,7 @@ function love.draw()
     drawNoteBox()
     drawDropdown()
 
-    love.graphics.setColor(hoverBtn and BTN_COL_HOVER or BTN_COLOR)
+    love.graphics.setColor(hoverSave and BTN_COL_HOVER or BTN_COLOR)
     love.graphics.rectangle(
         "fill",
         saveBtn.x,
@@ -533,4 +657,23 @@ function love.draw()
     )
     love.graphics.setColor(1, 1, 1)
     love.graphics.printf("Save", saveBtn.x, saveBtn.y + 14, saveBtn.w, "center")
+
+    love.graphics.setColor(hoverClose and CLOSE_BTN_HOVER or CLOSE_BTN_COL)
+    love.graphics.rectangle(
+        "fill",
+        closeBtn.x,
+        closeBtn.y,
+        closeBtn.w,
+        closeBtn.h,
+        6,
+        6
+    )
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.printf(
+        "Close",
+        closeBtn.x,
+        closeBtn.y + 14,
+        closeBtn.w,
+        "center"
+    )
 end

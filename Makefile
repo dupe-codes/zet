@@ -5,7 +5,7 @@ add: ## Add a lua dependency to the local project, usage: make add package=packa
 
 .PHONY: install
 install: ## Install project dependencies
-	luarocks install --tree lua_modules --deps-only zet-dev-1.rockspec
+	luarocks --lua-version=5.1 install --tree lua_modules --deps-only zet-dev-1.rockspec
 
 .PHONY: run
 run: ## Run the zet application
