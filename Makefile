@@ -9,7 +9,7 @@ install: ## Install project dependencies
 
 .PHONY: run
 run: ## Run the zet application
-	@source $(CURDIR)/project.env && ./src/zet.lua
+	@source $(CURDIR)/project.env && love ./src/
 
 .PHONY: lint
 lint: ## Lint lua source files
