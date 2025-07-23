@@ -1,38 +1,29 @@
--- expose ./lua_modules/**
-do
-    local root = love.filesystem.getSourceBaseDirectory()
+love.filesystem.setRequirePath(
+    "?.lua;?/init.lua;"
+        .. "lua_modules/share/lua/5.1/?.lua;"
+        .. "lua_modules/share/lua/5.1/?/init.lua"
+)
 
-    local ver = "5.1"
-    package.path = root
-        .. "/lua_modules/share/lua/"
-        .. ver
-        .. "/?.lua;"
-        .. root
-        .. "/lua_modules/share/lua/"
-        .. ver
-        .. "/?/init.lua;"
-        .. package.path
+local ver = "5.1"
+local ext = (jit.os == "Windows" and "dll")
+    or (jit.os == "OSX" and "dylib")
+    or "so"
 
-    local ext = (jit.os == "Windows" and "dll")
-        or (jit.os == "OSX" and "dylib")
-        or "so"
-
-    package.cpath = root
-        .. "/lua_modules/lib/lua/"
-        .. ver
-        .. "/?."
-        .. ext
-        .. ";"
-        .. package.cpath
-end
+-- Only matters during dev (unpacked folder). Inside .love this is ignored.
+package.cpath = "lua_modules/lib/lua/"
+    .. ver
+    .. "/?."
+    .. ext
+    .. ";"
+    .. package.cpath
 
 local NOTES_DIR = os.getenv "HOME" .. "/datastore"
 
 local utf8 = require "utf8"
 local yaml = require "yaml"
 
-local file_utils = require "file-utils"
-local template_engine = require "templates.engine"
+local file_utils = require "src.file-utils"
+local template_engine = require "src.templates.engine"
 
 local BINS_PATH = NOTES_DIR .. "/configs/bins.yml"
 local BINS = yaml.eval(file_utils.read_file(BINS_PATH))
@@ -152,6 +143,26 @@ local function slugify(str)
     return (str:lower():gsub("[^%w%s]", ""):gsub("%s+", "_"))
 end
 
+----------------------------------------------------------------
+local function templateDiskPath(relPath)
+    local realDir = love.filesystem.getRealDirectory(relPath)
+
+    if realDir and not realDir:match "%.love$" then
+        return realDir .. "/" .. relPath
+    end
+
+    local data = assert(
+        love.filesystem.read(relPath),
+        "missing template in game: " .. relPath
+    )
+
+    local tmpPath = os.tmpname() .. ".mdlua"
+    local fh = assert(io.open(tmpPath, "wb"))
+    fh:write(data)
+    fh:close()
+    return tmpPath
+end
+
 local function saveNote()
     local category = dropdown.selected
     local binRelPath = BIN_LOOKUP[category] -- e.g. "1 - art/notes"
@@ -162,8 +173,8 @@ local function saveNote()
     local baseName = title ~= "" and slugify(title) or os.date "%Y-%m-%d_%H%M%S"
     local fullPath = destDir .. "/" .. baseName .. ".md"
 
-    local templatePath = love.filesystem.getSourceBaseDirectory()
-        .. "/src/templates/note.mdlua"
+    local relTemplate = "src/templates/note.mdlua"
+    local templatePath = templateDiskPath(relTemplate)
 
     local rendered_note = template_engine.compile_template_file(templatePath, {
         category = category,
