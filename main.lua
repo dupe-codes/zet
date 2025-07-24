@@ -25,7 +25,7 @@ local yaml = require "yaml"
 local file_utils = require "src.file-utils"
 local template_engine = require "src.templates.engine"
 
-local BINS_PATH = NOTES_DIR .. "/configs/bins.yml"
+local BINS_PATH = NOTES_DIR .. "/configs/bins.yaml"
 local BINS = yaml.eval(file_utils.read_file(BINS_PATH))
 
 local BIN_LOOKUP = {}
