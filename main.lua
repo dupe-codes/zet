@@ -154,7 +154,7 @@ end
 
 local function slugify(str)
     -- lower-case, swap spaces for underscores, strip non-alphanumerics
-    return (str:lower():gsub("[^%w%s]", ""):gsub("%s+", "_"))
+    return (str:lower():gsub("[^%w%s]", ""))
 end
 
 ----------------------------------------------------------------
