@@ -247,6 +247,23 @@ local function cutSelection()
     clearSel()
 end
 
+local function deleteSelection()
+    if not noteBox.active then
+        return
+    end
+
+    local byteA, byteB = selectedBytes(noteText)
+    if not byteA then
+        return
+    end -- nothing highlighted
+
+    noteText = noteText:sub(1, byteA - 1) -- drop selection
+        .. noteText:sub(byteB + 1)
+
+    caretPos = byteA -- caret goes to start
+    clearSel()
+end
+
 -- wrapped lines helper
 local function getWrappedLines(text, wrapW, f)
     local _, lines = f:getWrap(text, wrapW)
@@ -438,6 +455,11 @@ end
 
 function love.keypressed(key)
     if key == "backspace" then
+        if noteBox.active and selectedBytes(noteText) then
+            deleteSelection()
+            return
+        end
+
         if titleBox.active then
             titleText = backspaceAt(titleText, utf8.len(titleText) + 1)
         elseif descBox.active then
