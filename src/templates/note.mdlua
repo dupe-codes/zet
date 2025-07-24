@@ -3,6 +3,7 @@ status: draft
 tags:
 - {{ category }}
 - inbox
+maps:
 description: {{ description }}
 created_at: {{ os.date("%Y-%m-%d") }}
 ---
