@@ -11,6 +11,10 @@ install: ## Install project dependencies
 run: ## Run the zet application
 	@source $(CURDIR)/project.env && love .
 
+.PHONY: release
+release: ## Build and release the love application
+	./release.sh
+
 .PHONY: lint
 lint: ## Lint lua source files
 	@luacheck src/
