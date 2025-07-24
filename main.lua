@@ -97,6 +97,8 @@ local hoverClose = false
 local noteScroll = 0 -- current vertical scroll offset
 local caretPos = 1 -- UTF‑8 char index where next insert happens (1‑based)
 
+local selStart, selEnd = nil, nil -- UTF‑8 char indices (inclusive range)
+
 local FIELDS = {} -- ordered list of focusable elements
 local focusIndex = 1 -- 1-based; titleBox gets focus first
 
@@ -107,6 +109,42 @@ local function setFocus(i)
         box.active = false
     end
     FIELDS[focusIndex].active = true
+end
+
+local function hasSelection()
+    return selStart and selEnd and selStart ~= selEnd
+end
+local function clearSel()
+    selStart, selEnd = nil, nil
+end
+
+-- Normalise so selStart < selEnd
+local function normalisedSel()
+    if not hasSelection() then
+        return nil
+    end
+    return math.min(selStart, selEnd), math.max(selStart, selEnd)
+end
+
+local function insertAt(s, insert, pos)
+    local byte = utf8.offset(s, pos)
+    if not byte then
+        return s .. insert, pos + utf8.len(insert)
+    end
+    return s:sub(1, byte - 1) .. insert .. s:sub(byte), pos + utf8.len(insert)
+end
+
+local function replaceSelection(s, new)
+    if not hasSelection() then
+        return insertAt(s, new, caretPos)
+    end
+    local a, b = normalisedSel()
+    local byteA = utf8.offset(s, a)
+    local byteB = utf8.offset(s, b + 1) or (#s + 1)
+    local out = s:sub(1, byteA - 1) .. new .. s:sub(byteB)
+    caretPos = a + utf8.len(new)
+    clearSel()
+    return out, caretPos
 end
 
 local function contains(r, x, y)
@@ -122,12 +160,91 @@ local function backspaceAt(s, pos)
     return s:sub(1, bPrev - 1) .. s:sub(bCur), pos - 1
 end
 
-local function insertAt(s, insert, pos)
-    local byte = utf8.offset(s, pos)
-    if not byte then
-        return s .. insert, pos + utf8.len(insert)
+local function pasteClipboard()
+    local clip = love.system.getClipboardText() or ""
+    if clip == "" then
+        return
     end
-    return s:sub(1, byte - 1) .. insert .. s:sub(byte), pos + utf8.len(insert)
+
+    if titleBox.active then
+        titleText = titleText .. clip
+    elseif descBox.active then
+        descriptionText = descriptionText .. clip
+    elseif noteBox.active then
+        noteText, caretPos = replaceSelection(noteText, clip)
+    end
+end
+
+local function getActiveText()
+    if titleBox.active then
+        return titleText, "title"
+    elseif descBox.active then
+        return descriptionText, "desc"
+    elseif noteBox.active then
+        return noteText, "note"
+    end
+end
+
+-- return byte‑range (inclusive) of the current selection in `s`
+local function selectedBytes(s)
+    local a, b = normalisedSel() -- UTF‑8 indices
+    if not a then
+        return nil
+    end
+    local byteA = utf8.offset(s, a)
+    local byteB = (utf8.offset(s, b + 1) or (#s + 1)) - 1
+    return byteA, byteB -- inclusive bytes
+end
+
+local function copySelection()
+    if not hasSelection() then
+        local txt, _ = getActiveText()
+        if txt then
+            love.system.setClipboardText(txt)
+        end
+        return
+    end
+    local byteA, byteB = selectedBytes(noteText)
+    love.system.setClipboardText(noteText:sub(byteA, byteB))
+end
+
+local function cutSelection()
+    local buf
+    local setBuf
+
+    if noteBox.active then
+        buf = noteText
+        setBuf = function(new, newCaret)
+            noteText, caretPos = new, newCaret or 1
+        end
+    elseif titleBox.active then
+        buf = titleText
+        setBuf = function(new)
+            titleText = new
+        end
+    elseif descBox.active then
+        buf = descriptionText
+        setBuf = function(new)
+            descriptionText = new
+        end
+    else
+        return -- nothing focused
+    end
+
+    local byteA, byteB = selectedBytes(buf)
+
+    if not byteA then -- ►  NO HIGHLIGHT  ◄
+        -- treat the whole field as selected
+        love.system.setClipboardText(buf)
+        setBuf("", 1)
+        clearSel()
+        return
+    end
+
+    love.system.setClipboardText(buf:sub(byteA, byteB)) -- copy
+    local new = buf:sub(1, byteA - 1) .. buf:sub(byteB + 1) -- delete
+    setBuf(new, utf8.len(new) + 1) -- caret at end
+    clearSel()
 end
 
 -- wrapped lines helper
@@ -315,7 +432,7 @@ function love.textinput(t)
     elseif descBox.active then
         descriptionText = descriptionText .. t
     elseif noteBox.active then
-        noteText, caretPos = insertAt(noteText, t, caretPos)
+        noteText, caretPos = replaceSelection(noteText, t)
     end
 end
 
@@ -354,6 +471,52 @@ function love.keypressed(key)
             saveNote()
         else
             noteText, caretPos = insertAt(noteText, "\n", caretPos)
+        end
+        return
+    end
+
+    local ctrl = love.keyboard.isDown("lctrl", "rctrl")
+    if key == "v" and ctrl then
+        pasteClipboard()
+        return
+    end
+
+    if key == "c" and ctrl then
+        copySelection()
+        return
+    end
+    if key == "x" and ctrl then
+        cutSelection()
+        return
+    end
+
+    local shift = love.keyboard.isDown("lshift", "rshift")
+
+    if key == "left" and noteBox.active then
+        caretPos = math.max(1, caretPos - 1)
+        if shift then
+            selEnd = selEnd and caretPos or caretPos
+            selStart = selStart or caretPos + 1
+        else
+            clearSel()
+        end
+        return
+    elseif key == "right" and noteBox.active then
+        caretPos = math.min(utf8.len(noteText) + 1, caretPos + 1)
+        if shift then
+            selEnd = selEnd and caretPos or caretPos
+            selStart = selStart or caretPos - 1
+        else
+            clearSel()
+        end
+        return
+    end
+
+    if (key == "c" or key == "x") and (love.keyboard.isDown "lctrl") then
+        if key == "c" then
+            copySelection()
+        else
+            cutSelection()
         end
         return
     end
@@ -474,6 +637,20 @@ function love.mousepressed(x, y, btn)
     if contains(closeBtn, x, y) then
         love.event.quit()
         return
+    end
+
+    if noteBox.active then
+        setCaretFromClick(x, y)
+        selStart, selEnd = caretPos, caretPos -- start a zero‑width sel
+    else
+        clearSel()
+    end
+end
+
+function love.mousemoved(x, y, dx, dy)
+    if noteBox.active and love.mouse.isDown(1) then
+        setCaretFromClick(x, y)
+        selEnd = caretPos -- live‑update drag
     end
 end
 
@@ -626,6 +803,39 @@ local function drawNoteBox()
     love.graphics.push()
     love.graphics.translate(0, -noteScroll)
     love.graphics.setColor(0, 0, 0)
+
+    -- draw blue highlight behind selected range
+    if hasSelection() then
+        local a, b = normalisedSel()
+        local wrapW = noteBox.w - 24
+        local lines = getWrappedLines(noteText, wrapW, font)
+
+        -- Walk every char and emit rectangles where index ∈ [a,b]
+        local idx = 1
+        local y = noteBox.y + 12
+        for _, line in ipairs(lines) do
+            local lineLen = utf8.len(line)
+            local lineStart = idx
+            local lineEnd = idx + lineLen - 1
+
+            local selLo = math.max(a, lineStart)
+            local selHi = math.min(b, lineEnd)
+
+            if selLo <= selHi then
+                local pre = line:sub(1, selLo - lineStart)
+                local mid =
+                    line:sub(selLo - lineStart + 1, selHi - lineStart + 1)
+                local x1 = noteBox.x + 12 + font:getWidth(pre)
+                local wSel = font:getWidth(mid)
+                love.graphics.setColor(0.698, 0.776, 0.925, 0.6) -- pale blue
+                love.graphics.rectangle("fill", x1, y, wSel, font:getHeight())
+            end
+            idx = idx + lineLen + 1 -- +1 for newline
+            y = y + font:getHeight()
+        end
+        love.graphics.setColor(0, 0, 0) -- reset
+    end
+
     love.graphics.printf(
         noteText,
         noteBox.x + 12,
