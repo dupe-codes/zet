@@ -2,6 +2,7 @@
 tags:
 - {{ category }}
 - inbox
+description: {{ description }}
 created_at: {{ os.date("%Y-%m-%d") }}
 ---
 

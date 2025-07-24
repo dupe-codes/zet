@@ -46,7 +46,7 @@ table.sort(CATEGORY_OPTIONS)
 --------------------------------------------------------------
 --  CONFIGURATION  -------------------------------------------
 --------------------------------------------------------------
-local WIN_W, WIN_H = 900, 650 -- window size
+local WIN_W, WIN_H = 1440, 900 -- window size
 local MARGIN = 60 -- outer margin around sheet
 local TITLE_H = 50 -- title input height
 local DROPDOWN_H = 44 -- dropdown height when collapsed
@@ -55,6 +55,8 @@ local BTN_W, BTN_H = 120, 50 -- save button size
 local SCROLL_SPEED = 40 -- pixels per wheel notch
 local CONTENT_PAD = 24 -- pixels of extra space below the last line
 local ARROW_W = 44 -- width reserved at the right for the arrow button
+local GAP = 36 -- vertical space *between* components (was 20)
+local LABEL_PAD = 4 -- gap between a label and its box
 
 --------------------------------------------------------------
 --  COLOR SCHEME   -------------------------------------------
@@ -87,13 +89,26 @@ local HEADER_H = 90 -- vertical space we’ll reserve
 --------------------------------------------------------------
 --  GLOBAL STATE  --------------------------------------------
 --------------------------------------------------------------
-local sheet, titleBox, dropdown, noteBox, saveBtn, closeBtn
+local sheet, titleBox, dropdown, descBox, noteBox, saveBtn, closeBtn
 local font, hintFont
 local titleText, noteText = "", ""
+local descriptionText = ""
 local hoverSave = false
 local hoverClose = false
 local noteScroll = 0 -- current vertical scroll offset
 local caretPos = 1 -- UTF‑8 char index where next insert happens (1‑based)
+
+local FIELDS = {} -- ordered list of focusable elements
+local focusIndex = 1 -- 1-based; titleBox gets focus first
+
+local function setFocus(i)
+    focusIndex = ((i - 1) % #FIELDS) + 1 -- wrap around
+    -- clear everything, then mark the chosen one active
+    for _, box in ipairs(FIELDS) do
+        box.active = false
+    end
+    FIELDS[focusIndex].active = true
+end
 
 local function contains(r, x, y)
     return x > r.x and x < r.x + r.w and y > r.y and y < r.y + r.h
@@ -179,6 +194,7 @@ local function saveNote()
     local rendered_note = template_engine.compile_template_file(templatePath, {
         category = category,
         content = noteText,
+        description = descriptionText,
         os = os, -- so {% os.date %} works in template
     })
 
@@ -204,6 +220,7 @@ local function saveNote()
         "info",
         true
     )
+    love.event.quit()
 end
 
 --------------------------------------------------------------
@@ -222,47 +239,59 @@ function love.load()
     hintFont = love.graphics.newFont(16)
     love.graphics.setFont(font)
 
-    -- Layout
     sheet = {
         x = MARGIN,
         y = MARGIN,
         w = WIN_W - MARGIN * 2,
         h = WIN_H - MARGIN * 2,
     }
+
+    -- ── Title
     titleBox = {
         x = sheet.x + 40,
-        y = sheet.y + HEADER_H,
+        y = sheet.y + HEADER_H + GAP / 2,
         w = sheet.w - 80,
         h = TITLE_H,
         active = false,
     }
+
+    -- ── Category dropdown
     dropdown = {
         x = titleBox.x,
-        y = titleBox.y + TITLE_H + 20,
+        y = titleBox.y + TITLE_H + GAP,
         w = titleBox.w,
         h = DROPDOWN_H,
         expanded = false,
         selected = CATEGORY_OPTIONS[1],
     }
 
-    local btnTop = sheet.y + sheet.h - BTN_H - 40
-    local noteTop = dropdown.y + DROPDOWN_H + 20
-    local noteHeight = btnTop - noteTop - 20
-
-    noteBox = {
+    -- ── Description (single-line)
+    descBox = {
         x = dropdown.x,
-        y = noteTop,
+        y = dropdown.y + DROPDOWN_H + GAP,
         w = dropdown.w,
-        h = noteHeight,
+        h = TITLE_H,
+        active = false,
+    }
+
+    -- ── Note body (grows until buttons)
+    local btnTop = sheet.y + sheet.h - BTN_H - 40
+    local noteTop = descBox.y + TITLE_H + 20
+    noteBox = {
+        x = descBox.x,
+        y = noteTop + GAP,
+        w = descBox.w,
+        h = btnTop - noteTop - GAP,
         active = false,
     }
 
     saveBtn = {
         x = sheet.x + sheet.w - BTN_W - 40,
-        y = sheet.y + sheet.h - BTN_H - 40,
+        y = sheet.y + sheet.h - BTN_H - 40 + GAP / 2,
         w = BTN_W,
         h = BTN_H,
     }
+
     closeBtn = {
         x = saveBtn.x - BTN_W - 20,
         y = saveBtn.y,
@@ -270,6 +299,9 @@ function love.load()
         h = BTN_H,
     }
     caretPos = 1
+
+    FIELDS = { titleBox, dropdown, descBox, noteBox }
+    setFocus(1) -- titleBox starts active
 end
 
 function love.update(dt)
@@ -281,6 +313,8 @@ end
 function love.textinput(t)
     if titleBox.active then
         titleText = titleText .. t
+    elseif descBox.active then
+        descriptionText = descriptionText .. t
     elseif noteBox.active then
         noteText, caretPos = insertAt(noteText, t, caretPos)
     end
@@ -290,9 +324,29 @@ function love.keypressed(key)
     if key == "backspace" then
         if titleBox.active then
             titleText = backspaceAt(titleText, utf8.len(titleText) + 1)
+        elseif descBox.active then
+            descriptionText =
+                backspaceAt(descriptionText, utf8.len(descriptionText) + 1)
         elseif noteBox.active then
             noteText, caretPos = backspaceAt(noteText, caretPos)
         end
+        return
+    end
+
+    if key == "escape" then
+        love.event.quit()
+        return
+    end
+
+    if key == "tab" then
+        local step = love.keyboard.isDown("lshift", "rshift") and -1 or 1
+        setFocus(focusIndex + step)
+        -- special-case: put caret at end when we enter the note field
+        if noteBox.active then
+            caretPos = utf8.len(noteText) + 1
+        end
+        -- collapse dropdown if it had been expanded
+        dropdown.expanded = false
         return
     end
 
@@ -398,7 +452,17 @@ function love.mousepressed(x, y, btn)
 
     -- activate text boxes
     titleBox.active = contains(titleBox, x, y)
+    descBox.active = contains(descBox, x, y)
     noteBox.active = contains(noteBox, x, y)
+
+    if titleBox.active then
+        setFocus(1)
+    elseif descBox.active then
+        setFocus(3)
+    elseif noteBox.active then
+        setFocus(4)
+    end
+
     if noteBox.active then
         setCaretFromClick(x, y)
     end
@@ -615,6 +679,13 @@ local function drawNoteBox()
     love.graphics.setFont(font)
 end
 
+local function label(text, box)
+    love.graphics.setFont(hintFont)
+    love.graphics.setColor(HINT_COLOR)
+    love.graphics.print(text, box.x, box.y - hintFont:getHeight() - LABEL_PAD)
+    love.graphics.setFont(font)
+end
+
 function love.draw()
     love.graphics.setColor(0, 0, 0, 0.09)
     love.graphics.rectangle(
@@ -643,13 +714,29 @@ function love.draw()
 
     love.graphics.setFont(font)
 
+    label("Title", titleBox)
+    label("Category", dropdown)
+    label("Description", descBox)
+    label("Note", noteBox)
+
     drawInput(titleBox)
+
     love.graphics.setColor(0, 0, 0)
     love.graphics.printf(
         titleText,
         titleBox.x + 12,
         titleBox.y + 12,
         titleBox.w - 24,
+        "left"
+    )
+
+    drawInput(descBox)
+    love.graphics.setColor(0, 0, 0)
+    love.graphics.printf(
+        descriptionText,
+        descBox.x + 12,
+        descBox.y + 12,
+        descBox.w - 24,
         "left"
     )
 
