@@ -41,7 +41,6 @@ for _, row in ipairs(BINS.bins or {}) do
         table.insert(CATEGORY_OPTIONS, tag)
     end
 end
-table.sort(CATEGORY_OPTIONS)
 
 --------------------------------------------------------------
 --  CONFIGURATION  -------------------------------------------
