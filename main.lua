@@ -297,11 +297,6 @@ local function getCaretXY(text, pos, wrapW, f)
     return x, y
 end
 
-local function slugify(str)
-    -- lower-case, swap spaces for underscores, strip non-alphanumerics
-    return (str:lower():gsub("[^%w%s]", ""))
-end
-
 local function parseTags(s)
     local out, seen = {}, {}
     for part in (s or ""):gmatch "[^,]+" do
@@ -374,7 +369,7 @@ local function saveNote()
     local destDir = NOTES_DIR .. "/" .. binRelPath
 
     local title = titleText:gsub("^%s+", ""):gsub("%s+$", "")
-    local baseName = title ~= "" and slugify(title) or os.date "%Y-%m-%d_%H%M%S"
+    local baseName = title ~= "" and title or os.date "%Y-%m-%d_%H%M%S"
     local fullPath = destDir .. "/" .. baseName .. ".md"
 
     local relTemplate = "src/templates/note.mdlua"
