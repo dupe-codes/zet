@@ -77,6 +77,7 @@ local CLOSE_BTN_HOVER = { 0.616, 0.333, 0.376 } -- slightly lighter red
 local DROPDOWN_BG = { 0.902, 0.906, 0.929 } -- #e6e7ed (dropdown.bg)
 local HINT_COLOR = { 0.439, 0.447, 0.502 } -- #707280 (descriptionFg)
 local SCROLL_COL = { 0.565, 0.573, 0.588 } -- #909296 (scrollbar slider)
+local SELECT_BG = { 0.698, 0.776, 0.925, 0.9 } -- pale blue for list highlight
 
 -- arrow-strip greys (for dropdown button)
 local ARROW_BG = { 0.922, 0.925, 0.937 } -- #ebecf0 (inactive)
@@ -313,7 +314,40 @@ local function parseTags(s)
     return out
 end
 
-----------------------------------------------------------------
+local function utf8_backspace(s)
+    local len = utf8.len(s or "")
+    if not len or len == 0 then
+        return ""
+    end
+    local b = utf8.offset(s, len)
+    return s:sub(1, b - 1)
+end
+
+local function updateDropdownFilter()
+    local q = (dropdown.search or ""):lower()
+    dropdown.filtered = {}
+    if q == "" then
+        for _, v in ipairs(CATEGORY_OPTIONS) do
+            table.insert(dropdown.filtered, v)
+        end
+    else
+        for _, v in ipairs(CATEGORY_OPTIONS) do
+            if v:lower():find(q, 1, true) then
+                table.insert(dropdown.filtered, v)
+            end
+        end
+    end
+    if #dropdown.filtered == 0 then
+        dropdown.highlight = 0
+    else
+        dropdown.highlight =
+            math.min(dropdown.highlight or 1, #dropdown.filtered)
+        if dropdown.highlight < 1 then
+            dropdown.highlight = 1
+        end
+    end
+end
+
 local function templateDiskPath(relPath)
     local realDir = love.filesystem.getRealDirectory(relPath)
 
@@ -420,8 +454,13 @@ function love.load()
         w = titleBox.w,
         h = DROPDOWN_H,
         expanded = false,
+        active = false,
         selected = CATEGORY_OPTIONS[1],
+        search = "",
+        filtered = {},
+        highlight = 1,
     }
+    updateDropdownFilter()
 
     -- ── Description (single-line)
     descBox = {
@@ -477,6 +516,13 @@ function love.update(dt)
 end
 
 function love.textinput(t)
+    if dropdown.active then
+        dropdown.search = (dropdown.search or "") .. t
+        updateDropdownFilter()
+        dropdown.expanded = true
+        return
+    end
+
     if titleBox.active then
         titleText = titleText .. t
     elseif descBox.active then
@@ -490,6 +536,12 @@ end
 
 function love.keypressed(key)
     if key == "backspace" then
+        if dropdown.active then
+            dropdown.search = utf8_backspace(dropdown.search)
+            updateDropdownFilter()
+            return
+        end
+
         if noteBox.active and selectedBytes(noteText) then
             deleteSelection()
             return
@@ -549,8 +601,42 @@ function love.keypressed(key)
         return
     end
 
-    local shift = love.keyboard.isDown("lshift", "rshift")
+    -- Dropdown navigation
+    if dropdown.active then
+        if key == "down" then
+            if dropdown.expanded and #dropdown.filtered > 0 then
+                dropdown.highlight =
+                    math.min(dropdown.highlight + 1, #dropdown.filtered)
+            else
+                dropdown.expanded = true
+            end
+            return
+        elseif key == "up" then
+            if dropdown.expanded and #dropdown.filtered > 0 then
+                dropdown.highlight = math.max(dropdown.highlight - 1, 1)
+            end
+            return
+        elseif key == "return" then
+            if
+                dropdown.expanded
+                and #dropdown.filtered > 0
+                and dropdown.highlight > 0
+            then
+                dropdown.selected = dropdown.filtered[dropdown.highlight]
+            end
+            dropdown.expanded = false
+            dropdown.search = ""
+            updateDropdownFilter()
+            return
+        elseif key == "escape" then
+            dropdown.expanded = false
+            dropdown.search = ""
+            updateDropdownFilter()
+            return
+        end
+    end
 
+    local shift = love.keyboard.isDown("lshift", "rshift")
     if key == "left" and noteBox.active then
         caretPos = math.max(1, caretPos - 1)
         if shift then
@@ -659,17 +745,20 @@ function love.mousepressed(x, y, btn)
 
     -- dropdown
     if contains(dropdown, x, y) then
+        setFocus(2)
         dropdown.expanded = not dropdown.expanded
-        titleBox.active, noteBox.active = false, false
         return
     end
     if dropdown.expanded then
         local i = math.floor((y - (dropdown.y + dropdown.h)) / OPTION_H) + 1
-        if i >= 1 and i <= #CATEGORY_OPTIONS then
-            dropdown.selected = CATEGORY_OPTIONS[i]
+        if i >= 1 and i <= #dropdown.filtered then
+            dropdown.selected = dropdown.filtered[i]
         end
         dropdown.expanded = false
+        dropdown.search = ""
+        updateDropdownFilter()
     end
+
     collapseOutside(x, y)
 
     -- activate text boxes
@@ -711,6 +800,12 @@ function love.mousepressed(x, y, btn)
 end
 
 function love.mousemoved(x, y, dx, dy)
+    if dropdown.expanded then
+        local i = math.floor((y - (dropdown.y + dropdown.h)) / OPTION_H) + 1
+        if i >= 1 and i <= #dropdown.filtered then
+            dropdown.highlight = i
+        end
+    end
     if noteBox.active and love.mouse.isDown(1) then
         setCaretFromClick(x, y)
         selEnd = caretPos -- live‑update drag
@@ -742,7 +837,7 @@ local function drawDropdown()
     )
 
     -- Outline
-    love.graphics.setColor(BORDER_COLOR)
+    love.graphics.setColor(dropdown.active and FOCUS_COLOR or BORDER_COLOR)
     love.graphics.setLineWidth(3)
     love.graphics.rectangle(
         "line",
@@ -754,16 +849,20 @@ local function drawDropdown()
         8
     )
 
-    -- Text label (“art”, “hacking”…)
+    -- Field text: show search if any, else selected
+    local fieldText = (dropdown.search ~= "" and dropdown.search)
+        or dropdown.selected
+        or ""
     love.graphics.setColor(0, 0, 0)
     love.graphics.printf(
-        dropdown.selected,
+        fieldText,
         dropdown.x + 12,
         dropdown.y + 10,
         dropdown.w - ARROW_W - 12,
         "left"
     )
 
+    -- Arrow button
     local arrowX = dropdown.x + dropdown.w - ARROW_W
     local hover = contains(
         { x = arrowX, y = dropdown.y, w = ARROW_W, h = dropdown.h },
@@ -781,7 +880,6 @@ local function drawDropdown()
         8
     )
 
-    -- Vertical separator line
     love.graphics.setColor(BORDER_COLOR)
     love.graphics.setLineWidth(2)
     love.graphics.line(
@@ -794,9 +892,7 @@ local function drawDropdown()
     local midX = arrowX + ARROW_W / 2
     local midY = dropdown.y + dropdown.h / 2
     love.graphics.setColor(0.2, 0.2, 0.2)
-
     if dropdown.expanded then
-        -- UP-pointing triangle
         love.graphics.polygon(
             "fill",
             midX - 6,
@@ -807,7 +903,6 @@ local function drawDropdown()
             midY - 4
         )
     else
-        -- DOWN-pointing triangle
         love.graphics.polygon(
             "fill",
             midX - 6,
@@ -819,14 +914,17 @@ local function drawDropdown()
         )
     end
 
+    -- Options panel
     if dropdown.expanded then
+        local listH = math.max(1, #dropdown.filtered) * OPTION_H
+
         love.graphics.setColor(DROPDOWN_BG)
         love.graphics.rectangle(
             "fill",
             dropdown.x,
             dropdown.y + dropdown.h,
             dropdown.w,
-            #CATEGORY_OPTIONS * OPTION_H,
+            listH,
             8,
             8
         )
@@ -836,16 +934,40 @@ local function drawDropdown()
             dropdown.x,
             dropdown.y + dropdown.h,
             dropdown.w,
-            #CATEGORY_OPTIONS * OPTION_H,
+            listH,
             8,
             8
         )
 
-        for i, opt in ipairs(CATEGORY_OPTIONS) do
+        for i, opt in ipairs(dropdown.filtered) do
             local oy = dropdown.y + dropdown.h + (i - 1) * OPTION_H
-            love.graphics.setColor(0, 0, 0)
+            if i == dropdown.highlight then
+                love.graphics.setColor(SELECT_BG)
+                love.graphics.rectangle(
+                    "fill",
+                    dropdown.x + 1.5,
+                    oy,
+                    dropdown.w - 3,
+                    OPTION_H
+                )
+                love.graphics.setColor(0, 0, 0)
+            else
+                love.graphics.setColor(0, 0, 0)
+            end
             love.graphics.printf(
                 opt,
+                dropdown.x + 12,
+                oy + 8,
+                dropdown.w - 24,
+                "left"
+            )
+        end
+
+        if #dropdown.filtered == 0 then
+            local oy = dropdown.y + dropdown.h
+            love.graphics.setColor(0.4, 0.4, 0.4)
+            love.graphics.printf(
+                "(no matches)",
                 dropdown.x + 12,
                 oy + 8,
                 dropdown.w - 24,
