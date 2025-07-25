@@ -88,10 +88,11 @@ local HEADER_H = 90 -- vertical space we’ll reserve
 --------------------------------------------------------------
 --  GLOBAL STATE  --------------------------------------------
 --------------------------------------------------------------
-local sheet, titleBox, dropdown, descBox, noteBox, saveBtn, closeBtn
+local sheet, titleBox, dropdown, descBox, noteBox, saveBtn, closeBtn, tagsBox
 local font, hintFont
 local titleText, noteText = "", ""
 local descriptionText = ""
+local tagsText = "" -- comma-separated manual tags
 local hoverSave = false
 local hoverClose = false
 local noteScroll = 0 -- current vertical scroll offset
@@ -170,6 +171,8 @@ local function pasteClipboard()
         titleText = titleText .. clip
     elseif descBox.active then
         descriptionText = descriptionText .. clip
+    elseif tagsBox.active then
+        tagsText = tagsText .. clip
     elseif noteBox.active then
         noteText, caretPos = replaceSelection(noteText, clip)
     end
@@ -180,6 +183,8 @@ local function getActiveText()
         return titleText, "title"
     elseif descBox.active then
         return descriptionText, "desc"
+    elseif tagsBox.active then
+        return tagsText, "tags"
     elseif noteBox.active then
         return noteText, "note"
     end
@@ -226,6 +231,11 @@ local function cutSelection()
         buf = descriptionText
         setBuf = function(new)
             descriptionText = new
+        end
+    elseif tagsBox.active then
+        buf = tagsText
+        setBuf = function(new)
+            tagsText = new
         end
     else
         return -- nothing focused
@@ -291,6 +301,18 @@ local function slugify(str)
     return (str:lower():gsub("[^%w%s]", ""))
 end
 
+local function parseTags(s)
+    local out, seen = {}, {}
+    for part in (s or ""):gmatch "[^,]+" do
+        local t = part:gsub("^%s+", ""):gsub("%s+$", "")
+        if t ~= "" and not seen[t] then
+            seen[t] = true
+            table.insert(out, t)
+        end
+    end
+    return out
+end
+
 ----------------------------------------------------------------
 local function templateDiskPath(relPath)
     local realDir = love.filesystem.getRealDirectory(relPath)
@@ -324,11 +346,14 @@ local function saveNote()
     local relTemplate = "src/templates/note.mdlua"
     local templatePath = templateDiskPath(relTemplate)
 
+    local tags = parseTags(tagsText)
     local rendered_note = template_engine.compile_template_file(templatePath, {
         category = category,
         content = noteText,
         description = descriptionText,
+        tags = tags,
         os = os, -- so {% os.date %} works in template
+        ipairs = ipairs,
     })
 
     local ok, err = file_utils.write_file(fullPath, rendered_note)
@@ -407,13 +432,21 @@ function love.load()
         active = false,
     }
 
-    -- ── Note body (grows until buttons)
-    local btnTop = sheet.y + sheet.h - BTN_H - 40
-    local noteTop = descBox.y + TITLE_H + 20
-    noteBox = {
+    -- ── Additional Tags (comma-separated)
+    tagsBox = {
         x = descBox.x,
-        y = noteTop + GAP,
+        y = descBox.y + TITLE_H + GAP,
         w = descBox.w,
+        h = TITLE_H,
+        active = false,
+    }
+
+    local btnTop = sheet.y + sheet.h - BTN_H - 40
+    local noteTop = tagsBox.y + TITLE_H + 20
+    noteBox = {
+        x = tagsBox.x,
+        y = noteTop + GAP,
+        w = tagsBox.w,
         h = btnTop - noteTop - GAP,
         active = false,
     }
@@ -433,7 +466,7 @@ function love.load()
     }
     caretPos = 1
 
-    FIELDS = { titleBox, dropdown, descBox, noteBox }
+    FIELDS = { titleBox, dropdown, descBox, tagsBox, noteBox }
     setFocus(1) -- titleBox starts active
 end
 
@@ -448,6 +481,8 @@ function love.textinput(t)
         titleText = titleText .. t
     elseif descBox.active then
         descriptionText = descriptionText .. t
+    elseif tagsBox.active then
+        tagsText = tagsText .. t
     elseif noteBox.active then
         noteText, caretPos = replaceSelection(noteText, t)
     end
@@ -465,6 +500,8 @@ function love.keypressed(key)
         elseif descBox.active then
             descriptionText =
                 backspaceAt(descriptionText, utf8.len(descriptionText) + 1)
+        elseif tagsBox.active then
+            tagsText = backspaceAt(tagsText, utf8.len(tagsText) + 1)
         elseif noteBox.active then
             noteText, caretPos = backspaceAt(noteText, caretPos)
         end
@@ -619,6 +656,7 @@ function love.mousepressed(x, y, btn)
     if btn ~= 1 then
         return
     end
+
     -- dropdown
     if contains(dropdown, x, y) then
         dropdown.expanded = not dropdown.expanded
@@ -637,14 +675,17 @@ function love.mousepressed(x, y, btn)
     -- activate text boxes
     titleBox.active = contains(titleBox, x, y)
     descBox.active = contains(descBox, x, y)
+    tagsBox.active = contains(tagsBox, x, y)
     noteBox.active = contains(noteBox, x, y)
 
     if titleBox.active then
         setFocus(1)
     elseif descBox.active then
         setFocus(3)
-    elseif noteBox.active then
+    elseif tagsBox.active then
         setFocus(4)
+    elseif noteBox.active then
+        setFocus(5)
     end
 
     if noteBox.active then
@@ -948,6 +989,7 @@ function love.draw()
     label("Title", titleBox)
     label("Category", dropdown)
     label("Description", descBox)
+    label("Tags", tagsBox)
     label("Note", noteBox)
 
     drawInput(titleBox)
@@ -968,6 +1010,16 @@ function love.draw()
         descBox.x + 12,
         descBox.y + 12,
         descBox.w - 24,
+        "left"
+    )
+
+    drawInput(tagsBox)
+    love.graphics.setColor(0, 0, 0)
+    love.graphics.printf(
+        tagsText,
+        tagsBox.x + 12,
+        tagsBox.y + 12,
+        tagsBox.w - 24,
         "left"
     )
 

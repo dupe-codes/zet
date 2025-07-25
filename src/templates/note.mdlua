@@ -3,7 +3,8 @@ status: draft
 tags:
 - {{ category }}
 - inbox
-maps:
+{% for _, tag in ipairs(tags) do }}- {{ tag }}
+{% end }}maps:
 description: {{ description }}
 created_at: {{ os.date("%Y-%m-%d") }}
 ---
