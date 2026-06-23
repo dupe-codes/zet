@@ -176,6 +176,21 @@ cases[#cases + 1] = {
 }
 
 cases[#cases + 1] = {
+    name = "a tag containing a colon is quoted so it stays a string, not a mapping",
+    fn = function()
+        -- Same YAML-corruption class as the description finding: an unquoted
+        -- `- foo: bar` list item parses as a mapping, silently losing the tag.
+        local rendered = render_capturing(BLOCK_TEMPLATE, {
+            description = "",
+            tags = { "needs: review" },
+            content = "",
+        })
+        local has_line = rendered:find('  - "needs: review"', 1, true) ~= nil
+        support.assert_equal(has_line, true, "colon tag quoted as a scalar")
+    end,
+}
+
+cases[#cases + 1] = {
     name = "date placeholders in the body are filled, not just the frontmatter",
     fn = function()
         local template = table.concat({

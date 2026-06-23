@@ -81,6 +81,57 @@ local function split_frontmatter(template)
     return fm, rest
 end
 
+-- Characters that force quoting when they LEAD a YAML plain scalar: each
+-- would otherwise be read as a flow indicator, anchor, alias, tag, comment,
+-- block-scalar header, or document marker rather than literal text.
+local YAML_LEADING_INDICATORS = {}
+for ch in ("-?:,[]{}#&*!|>'\"%@`"):gmatch "." do
+    YAML_LEADING_INDICATORS[ch] = true
+end
+
+-- Decide whether `value` is safe to emit as a YAML plain (unquoted) scalar on
+-- a `key: value` line. A plain scalar may not be empty, lead with an indicator
+-- character, contain ": " or " #" (which would open a nested mapping or an
+-- inline comment), end in a colon, or carry surrounding whitespace.
+local function plain_scalar_is_safe(value)
+    if value == "" then
+        return false
+    end
+    if YAML_LEADING_INDICATORS[value:sub(1, 1)] then
+        return false
+    end
+    if value:find(": ", 1, true) then
+        return false
+    end
+    if value:find(" #", 1, true) then
+        return false
+    end
+    if value:sub(-1) == ":" then
+        return false
+    end
+    if value:match "^%s" then
+        return false
+    end
+    if value:match "%s$" then
+        return false
+    end
+    return true
+end
+
+-- Render `value` as a YAML scalar safe to place after a `key: ` (or as a `- `
+-- list item). Safe values pass through unquoted to keep the frontmatter
+-- readable; anything else is emitted as a double-quoted scalar with `\` and `"`
+-- escaped, which can carry arbitrary text (colons, hashes, quotes) without
+-- corrupting the frontmatter.
+local function yaml_scalar(value)
+    assert(type(value) == "string", "yaml_scalar requires a string")
+    if plain_scalar_is_safe(value) then
+        return value
+    end
+    local escaped = value:gsub("\\", "\\\\"):gsub('"', '\\"')
+    return '"' .. escaped .. '"'
+end
+
 -- Rewrite the `tags:` block, appending the user's tags after the template's
 -- own (e.g. `inbox`/`codex`), de-duplicated and order-preserving. Returns the
 -- new list of frontmatter lines.
@@ -132,7 +183,7 @@ local function merge_tags(lines, user_tags)
                     end
                 end
                 for _, tag in ipairs(merged) do
-                    out[#out + 1] = item_indent .. "- " .. tag
+                    out[#out + 1] = item_indent .. "- " .. yaml_scalar(tag)
                 end
             end
         else
@@ -141,56 +192,6 @@ local function merge_tags(lines, user_tags)
         end
     end
     return out, handled
-end
-
--- Characters that force quoting when they LEAD a YAML plain scalar: each
--- would otherwise be read as a flow indicator, anchor, alias, tag, comment,
--- block-scalar header, or document marker rather than literal text.
-local YAML_LEADING_INDICATORS = {}
-for ch in ("-?:,[]{}#&*!|>'\"%@`"):gmatch "." do
-    YAML_LEADING_INDICATORS[ch] = true
-end
-
--- Decide whether `value` is safe to emit as a YAML plain (unquoted) scalar on
--- a `key: value` line. A plain scalar may not be empty, lead with an indicator
--- character, contain ": " or " #" (which would open a nested mapping or an
--- inline comment), end in a colon, or carry surrounding whitespace.
-local function plain_scalar_is_safe(value)
-    if value == "" then
-        return false
-    end
-    if YAML_LEADING_INDICATORS[value:sub(1, 1)] then
-        return false
-    end
-    if value:find(": ", 1, true) then
-        return false
-    end
-    if value:find(" #", 1, true) then
-        return false
-    end
-    if value:sub(-1) == ":" then
-        return false
-    end
-    if value:match "^%s" then
-        return false
-    end
-    if value:match "%s$" then
-        return false
-    end
-    return true
-end
-
--- Render `value` as a YAML scalar safe to place after a `key: `. Safe values
--- pass through unquoted to keep the frontmatter readable; anything else is
--- emitted as a double-quoted scalar with `\` and `"` escaped, which can carry
--- arbitrary text (colons, hashes, quotes) without corrupting the frontmatter.
-local function yaml_scalar(value)
-    assert(type(value) == "string", "yaml_scalar requires a string")
-    if plain_scalar_is_safe(value) then
-        return value
-    end
-    local escaped = value:gsub("\\", "\\\\"):gsub('"', '\\"')
-    return '"' .. escaped .. '"'
 end
 
 -- Set the `description:` value when the user supplied one. Modifies the
@@ -264,7 +265,7 @@ function M.render(template_path, fields)
         for _, tag in ipairs(user_tags) do
             if tag ~= "" and not seen[tag] then
                 seen[tag] = true
-                lines[#lines + 1] = "  - " .. tag
+                lines[#lines + 1] = "  - " .. yaml_scalar(tag)
             end
         end
     end
