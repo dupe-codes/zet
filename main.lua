@@ -645,6 +645,17 @@ function love.keypressed(key)
     end
 
     if key == "escape" then
+        -- Collapse an open dropdown before falling through to quit, so Escape
+        -- dismisses the overlay the user is looking at rather than killing the
+        -- app out from under them. Only an EXPANDED dropdown intercepts Escape;
+        -- with nothing open, Escape quits as before.
+        local escDd, escOpts = activeDropdown()
+        if escDd and escDd.expanded then
+            escDd.expanded = false
+            escDd.search = ""
+            updateDropdownFilter(escDd, escOpts)
+            return
+        end
         love.event.quit()
         return
     end
@@ -713,12 +724,9 @@ function love.keypressed(key)
             navDd.search = ""
             updateDropdownFilter(navDd, navOpts)
             return
-        elseif key == "escape" then
-            navDd.expanded = false
-            navDd.search = ""
-            updateDropdownFilter(navDd, navOpts)
-            return
         end
+        -- Note: Escape is handled at the top of keypressed (it collapses an
+        -- open dropdown, else quits), so there is no escape branch here.
     end
 
     local shift = love.keyboard.isDown("lshift", "rshift")
@@ -929,17 +937,23 @@ function love.mousepressed(x, y, btn)
 end
 
 function love.mousemoved(x, y, dx, dy)
+    -- The options panel spans [dd.x, dd.x + dd.w]; ignore highlight updates
+    -- when the cursor is outside that horizontal band so moving the mouse off
+    -- to the side does not keep re-highlighting rows from the y position alone.
     if domainDropdown.expanded then
+        local within_x = x >= domainDropdown.x
+            and x <= domainDropdown.x + domainDropdown.w
         local i = math.floor(
             (y - (domainDropdown.y + domainDropdown.h)) / OPTION_H
         ) + 1
-        if i >= 1 and i <= #domainDropdown.filtered then
+        if within_x and i >= 1 and i <= #domainDropdown.filtered then
             domainDropdown.highlight = i
         end
     end
     if dropdown.expanded then
+        local within_x = x >= dropdown.x and x <= dropdown.x + dropdown.w
         local i = math.floor((y - (dropdown.y + dropdown.h)) / OPTION_H) + 1
-        if i >= 1 and i <= #dropdown.filtered then
+        if within_x and i >= 1 and i <= #dropdown.filtered then
             dropdown.highlight = i
         end
     end
