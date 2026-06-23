@@ -13,6 +13,7 @@ make install     # Install dependencies from rockspec with luarocks
 make run         # Run the application (sources project.env, launches with 'love .')
 make release     # Build zet.love bundle and install system-wide to ~/.local/
 make lint        # Run luacheck on src/
+make test        # Run the unit test suite with luajit (tests/run.lua)
 make format      # Run stylua formatting on src/
 make docs        # Generate documentation with ldoc
 ```
@@ -23,8 +24,11 @@ make docs        # Generate documentation with ldoc
 
 - **main.lua** - Monolithic main file containing all UI logic, state management, and Love2D lifecycle hooks
 - **src/file-utils.lua** - File I/O utilities (read_file, write_file)
-- **src/templates/engine.lua** - Template compilation engine supporting `{{ expr }}` and `{% code %}` syntax
+- **src/domains.lua** - Loads the shared context-domain registry from `~/.claude/domains.json`
+- **src/bins.lua** - Resolves a vault's note types from built-in defaults overlaid with an optional `meta/configs/zet-bins.yaml`
+- **src/note_writer.lua** - Renders a finished note by merging user input (description, tags, content) into a vault template's YAML frontmatter
 - **src/setup.lua** - Lua module path configuration for packed/unpacked environments
+- **tests/** - Dependency-free Lua test harness (`tests/run.lua`) covering domains, bins, and note_writer
 
 ### Love2D Lifecycle
 
@@ -44,6 +48,7 @@ All UI elements (titleBox, dropdown, descBox, tagsBox, noteBox) are rectangle-ba
 
 - lua ~> 5.1
 - lua-yaml 1.2-2
+- dkjson >= 2.5
 - ldoc 1.5.0-1
 - inspect >= 3.1
 - debugger scm-1
