@@ -12,7 +12,8 @@ dependencies = {
     "ldoc = 1.5.0-1",
     "inspect >= 3.1",
     "lua ~> 5.1",
-    "lua-yaml = 1.2-2"
+    "lua-yaml = 1.2-2",
+    "dkjson >= 2.5"
 }
 build = {
     type = "builtin",
