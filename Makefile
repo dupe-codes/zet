@@ -19,6 +19,10 @@ release: ## Build and release the love application
 lint: ## Lint lua source files
 	@luacheck src/
 
+.PHONY: test
+test: ## Run the unit test suite (LuaJIT, matching the LÖVE runtime)
+	@luajit tests/run.lua
+
 .PHONY: format
 format: ## Format lua source files
 	@stylua -v src/
