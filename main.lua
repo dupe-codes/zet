@@ -24,8 +24,20 @@ local domains = require "src.domains"
 local file_utils = require "src.file-utils"
 local note_writer = require "src.note_writer"
 
--- Registered context domains, expanded from ~/.claude/domains.json.
-local DOMAINS = domains.load()
+-- Registered context domains, expanded from ~/.claude/domains.json. The
+-- registry is external input, so a missing/empty/unparseable file is an
+-- expected operating error, not a bug: capture it here and surface it as a
+-- graceful message box in love.load() rather than LÖVE's raw error screen.
+local DOMAINS, DOMAIN_LOAD_ERR
+do
+    local ok, result = pcall(domains.load)
+    if ok then
+        DOMAINS = result
+    else
+        DOMAINS = {}
+        DOMAIN_LOAD_ERR = tostring(result)
+    end
+end
 local DOMAIN_NAMES = {}
 local DOMAIN_BY_NAME = {}
 for _, d in ipairs(DOMAINS) do
@@ -458,6 +470,22 @@ end
 --  LOVE CALLBACKS  ------------------------------------------
 --------------------------------------------------------------
 function love.load()
+    -- The domain registry failed to load (see top of file). Degrade gracefully
+    -- with a readable message box and quit instead of crashing on first run.
+    if DOMAIN_LOAD_ERR then
+        love.window.showMessageBox(
+            "zet – configuration error",
+            "Could not load the context-domain registry.\n\n"
+                .. DOMAIN_LOAD_ERR
+                .. "\n\nCreate ~/.claude/domains.json with at least one "
+                .. "domain entry, then relaunch zet.",
+            "error",
+            true
+        )
+        love.event.quit()
+        return
+    end
+
     titleFont = love.graphics.newFont(32)
     subtitleFont = love.graphics.newFont(18)
 
