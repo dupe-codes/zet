@@ -235,6 +235,7 @@ function M.render(template_path, fields)
         type(template_path) == "string" and template_path ~= "",
         "note_writer.render requires a template path"
     )
+    assert(type(fields) == "table", "note_writer.render requires a fields table")
     local template = file_utils.read_file(template_path)
 
     local description = trim(fields.description or "")
