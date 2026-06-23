@@ -89,15 +89,73 @@ for ch in ("-?:,[]{}#&*!|>'\"%@`"):gmatch "." do
     YAML_LEADING_INDICATORS[ch] = true
 end
 
+-- Plain scalars that YAML 1.1 reads as a typed value (boolean / null / tilde)
+-- rather than the literal string the user typed. Emitting one of these
+-- unquoted silently changes its type on the next read: `description: true`
+-- comes back as a boolean, `description: null` as nil. Matching is
+-- case-insensitive because YAML accepts `True`/`TRUE`/`true` alike; quoting a
+-- borderline value is harmless (it stays a string), so we err toward caution.
+--
+-- We deliberately stop at the multi-letter tokens and exclude the YAML 1.1
+-- single-letter bools (`y`/`n`) and `on`/`off`: they collide with legitimate
+-- short tags and the dominant real-world corruptors are the words below.
+local YAML_RESERVED_WORDS = {}
+for _, word in ipairs { "true", "false", "yes", "no", "null", "~" } do
+    YAML_RESERVED_WORDS[word] = true
+end
+
+-- Decide whether `value` would be parsed as a YAML number (and so silently
+-- coerced from string to int/float) rather than left as text. Lua patterns
+-- have no alternation, so each numeric shape gets its own anchored match. We
+-- cover the forms a YAML 1.1 parser coerces: decimal ints, decimal floats with
+-- an optional exponent, hex / octal / binary radices, and the ±inf / nan
+-- sentinels. Underscores are permitted inside digit runs (YAML digit grouping,
+-- e.g. `1_000`). Over-matching is safe: a quoted number stays a string.
+local function looks_like_yaml_number(value)
+    local lowered = value:lower()
+    if lowered:match "^[-+]?%.inf$" or lowered == ".nan" then
+        return true
+    end
+    if lowered:match "^[-+]?0x[%x_]+$" then
+        return true
+    end
+    if lowered:match "^[-+]?0o[0-7_]+$" then
+        return true
+    end
+    if lowered:match "^[-+]?0b[01_]+$" then
+        return true
+    end
+    -- Split off an optional decimal exponent, then validate the mantissa as an
+    -- integer or float. Doing it in two steps keeps each pattern legible.
+    local mantissa = lowered:match "^(.-)[eE][-+]?%d+$" or lowered
+    if mantissa:match "^[-+]?%d[%d_]*$" then
+        return true
+    end
+    if mantissa:match "^[-+]?%d[%d_]*%.[%d_]*$" then
+        return true
+    end
+    if mantissa:match "^[-+]?%.%d[%d_]*$" then
+        return true
+    end
+    return false
+end
+
 -- Decide whether `value` is safe to emit as a YAML plain (unquoted) scalar on
 -- a `key: value` line. A plain scalar may not be empty, lead with an indicator
--- character, contain ": " or " #" (which would open a nested mapping or an
--- inline comment), end in a colon, or carry surrounding whitespace.
+-- character, parse as a reserved word (true/false/null/…) or a number, contain
+-- ": " or " #" (which would open a nested mapping or an inline comment), end in
+-- a colon, or carry surrounding whitespace.
 local function plain_scalar_is_safe(value)
     if value == "" then
         return false
     end
     if YAML_LEADING_INDICATORS[value:sub(1, 1)] then
+        return false
+    end
+    if YAML_RESERVED_WORDS[value:lower()] then
+        return false
+    end
+    if looks_like_yaml_number(value) then
         return false
     end
     if value:find(": ", 1, true) then

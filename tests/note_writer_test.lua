@@ -149,6 +149,97 @@ cases[#cases + 1] = {
 }
 
 cases[#cases + 1] = {
+    name = "a reserved-word description is quoted so it stays a string",
+    fn = function()
+        -- `description: true` reads back as a boolean under YAML 1.1; quoting
+        -- keeps the literal text the user typed. Same corruption class as the
+        -- colon finding, in the narrower reserved-token form.
+        local rendered = render_capturing(BLOCK_TEMPLATE, {
+            description = "true",
+            tags = {},
+            content = "",
+        })
+        local has_line = rendered:find('description: "true"', 1, true) ~= nil
+        support.assert_equal(has_line, true, "reserved-word description quoted")
+    end,
+}
+
+cases[#cases + 1] = {
+    name = "a number-shaped description is quoted so it stays a string",
+    fn = function()
+        -- `description: 2024` reads back as an integer; quoting preserves it.
+        local rendered = render_capturing(BLOCK_TEMPLATE, {
+            description = "2024",
+            tags = {},
+            content = "",
+        })
+        local has_line = rendered:find('description: "2024"', 1, true) ~= nil
+        support.assert_equal(has_line, true, "integer-shaped description quoted")
+    end,
+}
+
+cases[#cases + 1] = {
+    name = "a float-shaped description is quoted so it stays a string",
+    fn = function()
+        local rendered = render_capturing(BLOCK_TEMPLATE, {
+            description = "3.14",
+            tags = {},
+            content = "",
+        })
+        local has_line = rendered:find('description: "3.14"', 1, true) ~= nil
+        support.assert_equal(has_line, true, "float-shaped description quoted")
+    end,
+}
+
+cases[#cases + 1] = {
+    name = "reserved-word and numeric tags are quoted, ordinary words are not",
+    fn = function()
+        -- `no` (bool), `~` (null) and `42` (int) would all change type as bare
+        -- list items; `inbox` and `review` are safe plain scalars and must
+        -- stay unquoted so the frontmatter remains readable.
+        local rendered = render_capturing(BLOCK_TEMPLATE, {
+            description = "",
+            tags = { "review", "no", "42", "~", "inbox" },
+            content = "",
+        })
+        local expected = table.concat({
+            "---",
+            "type: draft",
+            "description:",
+            "tags:",
+            "  - inbox",
+            "  - review",
+            '  - "no"',
+            '  - "42"',
+            '  - "~"',
+            "created_at: 2026-06-23",
+            "---",
+            "",
+            "",
+            "# Heading",
+            "",
+        }, "\n")
+        support.assert_equal(rendered, expected, "typed tags quoted, words plain")
+    end,
+}
+
+cases[#cases + 1] = {
+    name = "a word that merely contains a reserved token stays a plain scalar",
+    fn = function()
+        -- Only an EXACT reserved token coerces; `trueish`/`2024-06` are strings
+        -- and must not be needlessly quoted. Guards against over-matching.
+        local rendered = render_capturing(BLOCK_TEMPLATE, {
+            description = "trueish notes from 2024-06",
+            tags = {},
+            content = "",
+        })
+        local has_line =
+            rendered:find("\ndescription: trueish notes from 2024-06\n", 1, true) ~= nil
+        support.assert_equal(has_line, true, "near-miss description left plain")
+    end,
+}
+
+cases[#cases + 1] = {
     name = "duplicate tags are de-duplicated and template order is preserved",
     fn = function()
         local rendered = render_capturing(BLOCK_TEMPLATE, {
