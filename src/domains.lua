@@ -13,6 +13,23 @@ local M = {}
 
 local REGISTRY_PATH = os.getenv "HOME" .. "/.claude/domains.json"
 
+-- Whether a registry path is rooted such that it resolves independently of the
+-- current working directory: an absolute `/...` path, or a `~`/`~/...` path we
+-- expand against $HOME. A relative path would resolve against the launching
+-- CWD and is therefore rejected at the boundary (see M.load).
+local function path_is_rooted(path)
+    if path:sub(1, 1) == "/" then
+        return true
+    end
+    if path == "~" then
+        return true
+    end
+    if path:match "^~/" then
+        return true
+    end
+    return false
+end
+
 -- Expand a leading `~` (and `~/`) against $HOME. Leaves any other path as-is.
 local function expand_home(path)
     local home = os.getenv "HOME"
@@ -57,6 +74,13 @@ function M.load()
         assert(
             type(entry.path) == "string" and entry.path ~= "",
             "Domain '" .. name .. "' is missing a 'path'"
+        )
+        assert(
+            path_is_rooted(entry.path),
+            "Domain '"
+                .. name
+                .. "' path must be absolute or ~-rooted, got: "
+                .. entry.path
         )
         domains[#domains + 1] = {
             name = name,
