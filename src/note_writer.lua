@@ -293,7 +293,10 @@ function M.render(template_path, fields)
         type(template_path) == "string" and template_path ~= "",
         "note_writer.render requires a template path"
     )
-    assert(type(fields) == "table", "note_writer.render requires a fields table")
+    assert(
+        type(fields) == "table",
+        "note_writer.render requires a fields table"
+    )
     local template = file_utils.read_file(template_path)
 
     local description = trim(fields.description or "")
@@ -332,8 +335,11 @@ function M.render(template_path, fields)
 
     -- Fill dates over the WHOLE rendered document, not just the frontmatter, so
     -- a {{date}} placeholder in the body or appended content is honoured too.
-    local rendered =
-        "---\n" .. table.concat(lines, "\n") .. "\n---\n\n" .. body .. content
+    local rendered = "---\n"
+        .. table.concat(lines, "\n")
+        .. "\n---\n\n"
+        .. body
+        .. content
     return fill_dates(rendered)
 end
 

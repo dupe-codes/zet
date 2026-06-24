@@ -356,12 +356,31 @@ local function updateDropdownFilter(dd, options)
 end
 
 -- Populate the note-type dropdown from the chosen domain's resolved bins.
+-- bins.resolve() asserts on a malformed or empty per-vault zet-bins.yaml --
+-- that file is external input, so a bad edit is an expected operating error,
+-- not a bug. Mirror the graceful-degradation pattern that already guards the
+-- other two boundaries (domains.load at startup, note_writer.render in
+-- saveNote): capture the failure with pcall and surface a message box rather
+-- than letting the throw reach LÖVE's raw error screen.
 local function loadNoteTypes(domain)
     CATEGORY_OPTIONS = {}
     NOTE_TYPE_LOOKUP = {}
-    for _, nt in ipairs(bins.resolve(domain.path)) do
-        table.insert(CATEGORY_OPTIONS, nt.tag)
-        NOTE_TYPE_LOOKUP[nt.tag] = { bin = nt.bin, template = nt.template }
+    local ok, resolved = pcall(bins.resolve, domain.path)
+    if not ok then
+        love.window.showMessageBox(
+            "zet – error",
+            "Could not load note types for "
+                .. domain.name
+                .. ":\n"
+                .. tostring(resolved),
+            "error",
+            true
+        )
+    else
+        for _, nt in ipairs(resolved) do
+            table.insert(CATEGORY_OPTIONS, nt.tag)
+            NOTE_TYPE_LOOKUP[nt.tag] = { bin = nt.bin, template = nt.template }
+        end
     end
     dropdown.selected = CATEGORY_OPTIONS[1]
     dropdown.search = ""
