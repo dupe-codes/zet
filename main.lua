@@ -17,30 +17,40 @@ package.cpath = "lua_modules/lib/lua/"
     .. ";"
     .. package.cpath
 
-local NOTES_DIR = os.getenv "HOME" .. "/datastore"
-
 local utf8 = require "utf8"
-local yaml = require "yaml"
 
+local bins = require "src.bins"
+local domains = require "src.domains"
 local file_utils = require "src.file-utils"
-local template_engine = require "src.templates.engine"
+local note_writer = require "src.note_writer"
 
-local BINS_PATH = NOTES_DIR .. "/configs/bins.yaml"
-local BINS = yaml.eval(file_utils.read_file(BINS_PATH))
-
-local BIN_LOOKUP = {}
-for _, row in ipairs(BINS.bins or {}) do
-    BIN_LOOKUP[row.tag] = row.bin
-end
-
-local CATEGORY_OPTIONS = {}
-
-for _, row in ipairs(BINS.bins or {}) do
-    local tag = row.tag
-    if tag then
-        table.insert(CATEGORY_OPTIONS, tag)
+-- Registered context domains, expanded from ~/.claude/domains.json. The
+-- registry is external input, so a missing/empty/unparseable file is an
+-- expected operating error, not a bug: capture it here and surface it as a
+-- graceful message box in love.load() rather than LÖVE's raw error screen.
+local DOMAINS, DOMAIN_LOAD_ERR
+do
+    local ok, result = pcall(domains.load)
+    if ok then
+        DOMAINS = result
+    else
+        DOMAINS = {}
+        DOMAIN_LOAD_ERR = tostring(result)
     end
 end
+local DOMAIN_NAMES = {}
+local DOMAIN_BY_NAME = {}
+for _, d in ipairs(DOMAINS) do
+    DOMAIN_NAMES[#DOMAIN_NAMES + 1] = d.name
+    DOMAIN_BY_NAME[d.name] = d
+end
+
+-- Note-type (bin) state for the currently selected domain. Both stay empty
+-- until a domain is chosen, at which point loadNoteTypes() repopulates them:
+--   CATEGORY_OPTIONS - ordered tags shown in the note-type dropdown
+--   NOTE_TYPE_LOOKUP - tag -> { bin, template } for saveNote()
+local CATEGORY_OPTIONS = {}
+local NOTE_TYPE_LOOKUP = {}
 
 --------------------------------------------------------------
 --  CONFIGURATION  -------------------------------------------
@@ -89,7 +99,8 @@ local HEADER_H = 90 -- vertical space we’ll reserve
 --------------------------------------------------------------
 --  GLOBAL STATE  --------------------------------------------
 --------------------------------------------------------------
-local sheet, titleBox, dropdown, descBox, noteBox, saveBtn, closeBtn, tagsBox
+local sheet, titleBox, dropdown, domainDropdown, descBox, noteBox
+local saveBtn, closeBtn, tagsBox
 local font, hintFont
 local titleText, noteText = "", ""
 local descriptionText = ""
@@ -318,72 +329,136 @@ local function utf8_backspace(s)
     return s:sub(1, b - 1)
 end
 
-local function updateDropdownFilter()
-    local q = (dropdown.search or ""):lower()
-    dropdown.filtered = {}
+-- Rebuild `dd.filtered` from `options`, honouring the current search query.
+-- Shared by both the domain and note-type dropdowns.
+local function updateDropdownFilter(dd, options)
+    local q = (dd.search or ""):lower()
+    dd.filtered = {}
     if q == "" then
-        for _, v in ipairs(CATEGORY_OPTIONS) do
-            table.insert(dropdown.filtered, v)
+        for _, v in ipairs(options) do
+            table.insert(dd.filtered, v)
         end
     else
-        for _, v in ipairs(CATEGORY_OPTIONS) do
+        for _, v in ipairs(options) do
             if v:lower():find(q, 1, true) then
-                table.insert(dropdown.filtered, v)
+                table.insert(dd.filtered, v)
             end
         end
     end
-    if #dropdown.filtered == 0 then
-        dropdown.highlight = 0
+    if #dd.filtered == 0 then
+        dd.highlight = 0
     else
-        dropdown.highlight =
-            math.min(dropdown.highlight or 1, #dropdown.filtered)
-        if dropdown.highlight < 1 then
-            dropdown.highlight = 1
+        dd.highlight = math.min(dd.highlight or 1, #dd.filtered)
+        if dd.highlight < 1 then
+            dd.highlight = 1
         end
     end
 end
 
-local function templateDiskPath(relPath)
-    local realDir = love.filesystem.getRealDirectory(relPath)
-
-    if realDir and not realDir:match "%.love$" then
-        return realDir .. "/" .. relPath
+-- Populate the note-type dropdown from the chosen domain's resolved bins.
+-- bins.resolve() asserts on a malformed or empty per-vault zet-bins.yaml --
+-- that file is external input, so a bad edit is an expected operating error,
+-- not a bug. Mirror the graceful-degradation pattern that already guards the
+-- other two boundaries (domains.load at startup, note_writer.render in
+-- saveNote): capture the failure with pcall and surface a message box rather
+-- than letting the throw reach LÖVE's raw error screen.
+local function loadNoteTypes(domain)
+    CATEGORY_OPTIONS = {}
+    NOTE_TYPE_LOOKUP = {}
+    local ok, resolved = pcall(bins.resolve, domain.path)
+    if not ok then
+        love.window.showMessageBox(
+            "zet – error",
+            "Could not load note types for "
+                .. domain.name
+                .. ":\n"
+                .. tostring(resolved),
+            "error",
+            true
+        )
+    else
+        for _, nt in ipairs(resolved) do
+            table.insert(CATEGORY_OPTIONS, nt.tag)
+            NOTE_TYPE_LOOKUP[nt.tag] = { bin = nt.bin, template = nt.template }
+        end
     end
+    dropdown.selected = CATEGORY_OPTIONS[1]
+    dropdown.search = ""
+    dropdown.highlight = 1
+    updateDropdownFilter(dropdown, CATEGORY_OPTIONS)
+end
 
-    local data = assert(
-        love.filesystem.read(relPath),
-        "missing template in game: " .. relPath
-    )
+-- Select a domain by name and refresh the note-type dropdown for it.
+local function selectDomain(name)
+    domainDropdown.selected = name
+    local domain = DOMAIN_BY_NAME[name]
+    if domain then
+        loadNoteTypes(domain)
+    end
+end
 
-    local tmpPath = os.tmpname() .. ".mdlua"
-    local fh = assert(io.open(tmpPath, "wb"))
-    fh:write(data)
-    fh:close()
-    return tmpPath
+-- Return the dropdown that currently has focus, its option list, and a
+-- callback to apply a selection. Used by the shared keyboard/text handlers.
+local function activeDropdown()
+    if domainDropdown and domainDropdown.active then
+        return domainDropdown, DOMAIN_NAMES, selectDomain
+    end
+    if dropdown and dropdown.active then
+        return dropdown,
+            CATEGORY_OPTIONS,
+            function(v)
+                dropdown.selected = v
+            end
+    end
+    return nil
 end
 
 local function saveNote()
-    local category = dropdown.selected
-    local binRelPath = BIN_LOOKUP[category] -- e.g. "1 - art/notes"
-    assert(binRelPath, "No bin configured for tag: " .. tostring(category))
-    local destDir = NOTES_DIR .. "/" .. binRelPath
+    local domain = domainDropdown.selected
+        and DOMAIN_BY_NAME[domainDropdown.selected]
+    if not domain then
+        love.window.showMessageBox(
+            "zet – error",
+            "Pick a domain before saving.",
+            "error",
+            true
+        )
+        return
+    end
+
+    local nt = dropdown.selected and NOTE_TYPE_LOOKUP[dropdown.selected]
+    if not nt then
+        love.window.showMessageBox(
+            "zet – error",
+            "Pick a note type before saving.",
+            "error",
+            true
+        )
+        return
+    end
+
+    local destDir = domain.path .. "/" .. nt.bin
+    local templatePath = domain.path .. "/" .. nt.template
 
     local title = titleText:gsub("^%s+", ""):gsub("%s+$", "")
     local baseName = title ~= "" and title or os.date "%Y-%m-%d_%H%M%S"
     local fullPath = destDir .. "/" .. baseName .. ".md"
 
-    local relTemplate = "src/templates/note.mdlua"
-    local templatePath = templateDiskPath(relTemplate)
-
     local tags = parseTags(tagsText)
-    local rendered_note = template_engine.compile_template_file(templatePath, {
-        category = category,
-        content = noteText,
+    local ok_render, rendered_note = pcall(note_writer.render, templatePath, {
         description = descriptionText,
         tags = tags,
-        os = os, -- so {% os.date %} works in template
-        ipairs = ipairs,
+        content = noteText,
     })
+    if not ok_render then
+        love.window.showMessageBox(
+            "zet – error",
+            ("Failed to render note:\n%s"):format(tostring(rendered_note)),
+            "error",
+            true
+        )
+        return
+    end
 
     local ok, err = file_utils.write_file(fullPath, rendered_note)
     if not ok then
@@ -414,6 +489,22 @@ end
 --  LOVE CALLBACKS  ------------------------------------------
 --------------------------------------------------------------
 function love.load()
+    -- The domain registry failed to load (see top of file). Degrade gracefully
+    -- with a readable message box and quit instead of crashing on first run.
+    if DOMAIN_LOAD_ERR then
+        love.window.showMessageBox(
+            "zet – configuration error",
+            "Could not load the context-domain registry.\n\n"
+                .. DOMAIN_LOAD_ERR
+                .. "\n\nCreate ~/.claude/domains.json with at least one "
+                .. "domain entry, then relaunch zet.",
+            "error",
+            true
+        )
+        love.event.quit()
+        return
+    end
+
     titleFont = love.graphics.newFont(32)
     subtitleFont = love.graphics.newFont(18)
 
@@ -442,11 +533,26 @@ function love.load()
         active = false,
     }
 
-    -- ── Category dropdown
-    dropdown = {
+    -- ── Domain dropdown (which vault to write into)
+    domainDropdown = {
         x = titleBox.x,
         y = titleBox.y + TITLE_H + GAP,
         w = titleBox.w,
+        h = DROPDOWN_H,
+        expanded = false,
+        active = false,
+        selected = nil, -- no domain chosen yet
+        search = "",
+        filtered = {},
+        highlight = 1,
+    }
+    updateDropdownFilter(domainDropdown, DOMAIN_NAMES)
+
+    -- ── Note-type dropdown (empty until a domain is picked)
+    dropdown = {
+        x = domainDropdown.x,
+        y = domainDropdown.y + DROPDOWN_H + GAP,
+        w = domainDropdown.w,
         h = DROPDOWN_H,
         expanded = false,
         active = false,
@@ -455,7 +561,7 @@ function love.load()
         filtered = {},
         highlight = 1,
     }
-    updateDropdownFilter()
+    updateDropdownFilter(dropdown, CATEGORY_OPTIONS)
 
     -- ── Description (single-line)
     descBox = {
@@ -500,8 +606,8 @@ function love.load()
     }
     caretPos = 1
 
-    FIELDS = { titleBox, dropdown, descBox, tagsBox, noteBox }
-    setFocus(1) -- titleBox starts active
+    FIELDS = { domainDropdown, dropdown, titleBox, descBox, tagsBox, noteBox }
+    setFocus(1) -- domainDropdown starts active
 end
 
 function love.update(dt)
@@ -511,10 +617,11 @@ function love.update(dt)
 end
 
 function love.textinput(t)
-    if dropdown.active then
-        dropdown.search = (dropdown.search or "") .. t
-        updateDropdownFilter()
-        dropdown.expanded = true
+    local dd, opts = activeDropdown()
+    if dd then
+        dd.search = (dd.search or "") .. t
+        updateDropdownFilter(dd, opts)
+        dd.expanded = true
         return
     end
 
@@ -531,9 +638,10 @@ end
 
 function love.keypressed(key)
     if key == "backspace" then
-        if dropdown.active then
-            dropdown.search = utf8_backspace(dropdown.search)
-            updateDropdownFilter()
+        local dd, opts = activeDropdown()
+        if dd then
+            dd.search = utf8_backspace(dd.search)
+            updateDropdownFilter(dd, opts)
             return
         end
 
@@ -556,6 +664,17 @@ function love.keypressed(key)
     end
 
     if key == "escape" then
+        -- Collapse an open dropdown before falling through to quit, so Escape
+        -- dismisses the overlay the user is looking at rather than killing the
+        -- app out from under them. Only an EXPANDED dropdown intercepts Escape;
+        -- with nothing open, Escape quits as before.
+        local escDd, escOpts = activeDropdown()
+        if escDd and escDd.expanded then
+            escDd.expanded = false
+            escDd.search = ""
+            updateDropdownFilter(escDd, escOpts)
+            return
+        end
         love.event.quit()
         return
     end
@@ -567,8 +686,9 @@ function love.keypressed(key)
         if noteBox.active then
             caretPos = utf8.len(noteText) + 1
         end
-        -- collapse dropdown if it had been expanded
+        -- collapse dropdowns if they had been expanded
         dropdown.expanded = false
+        domainDropdown.expanded = false
         return
     end
 
@@ -596,39 +716,36 @@ function love.keypressed(key)
         return
     end
 
-    -- Dropdown navigation
-    if dropdown.active then
+    -- Dropdown navigation (works for whichever dropdown has focus)
+    local navDd, navOpts, navSelect = activeDropdown()
+    if navDd then
         if key == "down" then
-            if dropdown.expanded and #dropdown.filtered > 0 then
-                dropdown.highlight =
-                    math.min(dropdown.highlight + 1, #dropdown.filtered)
+            if navDd.expanded and #navDd.filtered > 0 then
+                navDd.highlight = math.min(navDd.highlight + 1, #navDd.filtered)
             else
-                dropdown.expanded = true
+                navDd.expanded = true
             end
             return
         elseif key == "up" then
-            if dropdown.expanded and #dropdown.filtered > 0 then
-                dropdown.highlight = math.max(dropdown.highlight - 1, 1)
+            if navDd.expanded and #navDd.filtered > 0 then
+                navDd.highlight = math.max(navDd.highlight - 1, 1)
             end
             return
         elseif key == "return" then
             if
-                dropdown.expanded
-                and #dropdown.filtered > 0
-                and dropdown.highlight > 0
+                navDd.expanded
+                and #navDd.filtered > 0
+                and navDd.highlight > 0
             then
-                dropdown.selected = dropdown.filtered[dropdown.highlight]
+                navSelect(navDd.filtered[navDd.highlight])
             end
-            dropdown.expanded = false
-            dropdown.search = ""
-            updateDropdownFilter()
-            return
-        elseif key == "escape" then
-            dropdown.expanded = false
-            dropdown.search = ""
-            updateDropdownFilter()
+            navDd.expanded = false
+            navDd.search = ""
+            updateDropdownFilter(navDd, navOpts)
             return
         end
+        -- Note: Escape is handled at the top of keypressed (it collapses an
+        -- open dropdown, else quits), so there is no escape branch here.
     end
 
     local shift = love.keyboard.isDown("lshift", "rshift")
@@ -679,17 +796,18 @@ function love.wheelmoved(dx, dy)
     end
 end
 
--- Collapse dropdown helper
-local function collapseOutside(x, y)
-    if dropdown.expanded and not contains(dropdown, x, y) then
+-- Collapse a dropdown when a click lands outside both its field and its
+-- expanded options panel.
+local function collapseOutside(dd, options, x, y)
+    if dd.expanded and not contains(dd, x, y) then
         local opts = {
-            x = dropdown.x,
-            y = dropdown.y + dropdown.h,
-            w = dropdown.w,
-            h = #CATEGORY_OPTIONS * OPTION_H,
+            x = dd.x,
+            y = dd.y + dd.h,
+            w = dd.w,
+            h = #options * OPTION_H,
         }
         if not contains(opts, x, y) then
-            dropdown.expanded = false
+            dd.expanded = false
         end
     end
 end
@@ -738,23 +856,66 @@ function love.mousepressed(x, y, btn)
         return
     end
 
-    -- dropdown
+    -- domain dropdown
+    if contains(domainDropdown, x, y) then
+        setFocus(1)
+        domainDropdown.expanded = not domainDropdown.expanded
+        dropdown.expanded = false
+        return
+    end
+    if domainDropdown.expanded then
+        local panel = {
+            x = domainDropdown.x,
+            y = domainDropdown.y + domainDropdown.h,
+            w = domainDropdown.w,
+            h = #domainDropdown.filtered * OPTION_H,
+        }
+        if contains(panel, x, y) then
+            local i = math.floor((y - panel.y) / OPTION_H) + 1
+            if i >= 1 and i <= #domainDropdown.filtered then
+                selectDomain(domainDropdown.filtered[i])
+            end
+            domainDropdown.expanded = false
+            domainDropdown.search = ""
+            updateDropdownFilter(domainDropdown, DOMAIN_NAMES)
+            return -- consume click; panel overlaps the field beneath it
+        end
+        domainDropdown.expanded = false
+        domainDropdown.search = ""
+        updateDropdownFilter(domainDropdown, DOMAIN_NAMES)
+    end
+
+    -- note-type dropdown
     if contains(dropdown, x, y) then
         setFocus(2)
         dropdown.expanded = not dropdown.expanded
+        domainDropdown.expanded = false
         return
     end
     if dropdown.expanded then
-        local i = math.floor((y - (dropdown.y + dropdown.h)) / OPTION_H) + 1
-        if i >= 1 and i <= #dropdown.filtered then
-            dropdown.selected = dropdown.filtered[i]
+        local panel = {
+            x = dropdown.x,
+            y = dropdown.y + dropdown.h,
+            w = dropdown.w,
+            h = #dropdown.filtered * OPTION_H,
+        }
+        if contains(panel, x, y) then
+            local i = math.floor((y - panel.y) / OPTION_H) + 1
+            if i >= 1 and i <= #dropdown.filtered then
+                dropdown.selected = dropdown.filtered[i]
+            end
+            dropdown.expanded = false
+            dropdown.search = ""
+            updateDropdownFilter(dropdown, CATEGORY_OPTIONS)
+            return -- consume click; panel overlaps the field beneath it
         end
         dropdown.expanded = false
         dropdown.search = ""
-        updateDropdownFilter()
+        updateDropdownFilter(dropdown, CATEGORY_OPTIONS)
     end
 
-    collapseOutside(x, y)
+    collapseOutside(domainDropdown, DOMAIN_NAMES, x, y)
+    collapseOutside(dropdown, CATEGORY_OPTIONS, x, y)
 
     -- activate text boxes
     titleBox.active = contains(titleBox, x, y)
@@ -763,13 +924,13 @@ function love.mousepressed(x, y, btn)
     noteBox.active = contains(noteBox, x, y)
 
     if titleBox.active then
-        setFocus(1)
-    elseif descBox.active then
         setFocus(3)
-    elseif tagsBox.active then
+    elseif descBox.active then
         setFocus(4)
-    elseif noteBox.active then
+    elseif tagsBox.active then
         setFocus(5)
+    elseif noteBox.active then
+        setFocus(6)
     end
 
     if noteBox.active then
@@ -795,9 +956,23 @@ function love.mousepressed(x, y, btn)
 end
 
 function love.mousemoved(x, y, dx, dy)
+    -- The options panel spans [dd.x, dd.x + dd.w]; ignore highlight updates
+    -- when the cursor is outside that horizontal band so moving the mouse off
+    -- to the side does not keep re-highlighting rows from the y position alone.
+    if domainDropdown.expanded then
+        local within_x = x >= domainDropdown.x
+            and x <= domainDropdown.x + domainDropdown.w
+        local i = math.floor(
+            (y - (domainDropdown.y + domainDropdown.h)) / OPTION_H
+        ) + 1
+        if within_x and i >= 1 and i <= #domainDropdown.filtered then
+            domainDropdown.highlight = i
+        end
+    end
     if dropdown.expanded then
+        local within_x = x >= dropdown.x and x <= dropdown.x + dropdown.w
         local i = math.floor((y - (dropdown.y + dropdown.h)) / OPTION_H) + 1
-        if i >= 1 and i <= #dropdown.filtered then
+        if within_x and i >= 1 and i <= #dropdown.filtered then
             dropdown.highlight = i
         end
     end
@@ -818,7 +993,9 @@ local function drawInput(box)
     love.graphics.rectangle("line", box.x, box.y, box.w, box.h, 8, 8)
 end
 
-local function drawDropdown()
+-- Draw a dropdown (field, arrow, and expanded options panel). `dropdown` here
+-- is the local parameter, so the same routine renders both dropdowns.
+local function drawDropdown(dropdown)
     -- Base field
     love.graphics.setColor(1, 1, 1)
     love.graphics.rectangle(
@@ -1104,7 +1281,8 @@ function love.draw()
     love.graphics.setFont(font)
 
     label("Title", titleBox)
-    label("Category", dropdown)
+    label("Domain", domainDropdown)
+    label("Note type", dropdown)
     label("Description", descBox)
     label("Tags", tagsBox)
     label("Note", noteBox)
@@ -1141,7 +1319,9 @@ function love.draw()
     )
 
     drawNoteBox()
-    drawDropdown()
+    -- Note-type first, then domain, so the upper domain panel layers on top.
+    drawDropdown(dropdown)
+    drawDropdown(domainDropdown)
 
     love.graphics.setColor(hoverSave and BTN_COL_HOVER or BTN_COLOR)
     love.graphics.rectangle(
